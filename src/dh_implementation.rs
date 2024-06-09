@@ -1,4 +1,4 @@
-use noise_protocol::DH;
+/*use noise_protocol::Dh;
 
 struct Dh25519 {
     privkey: [u8; 32],
@@ -54,4 +54,4 @@ impl Dh for Dh25519 {
         copy_slices!(result, out);
         Ok(())
     }
-}
+}*/
