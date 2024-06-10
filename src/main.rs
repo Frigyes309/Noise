@@ -52,7 +52,7 @@ async fn start_websocket_server() {
     }
 }
 
-fn handle_client_raw_message(msg: Cow<str>, buf: Vec<u8>, mut stop: bool) -> (Vec<u8>, bool) {
+fn handle_client_raw_message(msg: Cow<str>, mut stop: bool) -> (Vec<u8>, bool) {
     /*let mut str_real_len = String::new();
     let mut chars_iter = msg.chars().peekable();
     let mut start_len = 0;
@@ -90,7 +90,6 @@ fn handle_client_raw_message(msg: Cow<str>, buf: Vec<u8>, mut stop: bool) -> (Ve
     }
     (answer, stop)*/
     let mut answer: Vec<u8> = Vec::new();
-    let mut stop = false;
     if msg.eq("exit") {
         for c in "exit".bytes() {
             answer.push(c);
@@ -158,7 +157,7 @@ async fn handle_connection(stream: tokio::net::TcpStream) {
             let len = noise.read_message(&msg.into_data(), &mut buf).unwrap();
             let msg = String::from_utf8_lossy(&buf[..len]);
             println!("Client said: {}", msg);
-            let (answer, stop2) = handle_client_raw_message(msg, buf.clone(), stop);
+            let (answer, stop2) = handle_client_raw_message(msg, stop);
             stop = stop2;
             let len = noise.write_message(&answer, &mut buf).unwrap();
             write.send(Message::binary(&buf[..len])).await.unwrap();
