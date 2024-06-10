@@ -1,13 +1,13 @@
 use futures_util::{SinkExt, StreamExt};
-#[allow(unused_imports)]
-use jsonrpc_core::{BoxFuture, IoHandler, Params, Result, Value};
+use jsonrpc_core::{IoHandler, Result};
 use jsonrpc_derive::rpc;
 use lazy_static::lazy_static;
 use snow::{Builder, params::NoiseParams};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{accept_async, connect_async};
-use std::borrow::Cow;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 const IP_PORT: &str = "127.0.0.1:9999";
 lazy_static! {
@@ -17,29 +17,22 @@ lazy_static! {
 
 #[rpc]
 pub trait Rpc {
-    #[rpc(name = "protocolVersion")]
-    fn protocol_version(&self) -> Result<String>;
-
     #[rpc(name = "add")]
     fn add(&self, a: u64, b: u64) -> Result<u64>;
 
-    #[rpc(name = "callAsync")]
-    fn call(&self, a: u64) -> BoxFuture<Result<String>>;
+    #[rpc(name = "exit")]
+    fn exit(&self) -> Result<String>;
 }
 
 struct RpcImpl;
 
 impl Rpc for RpcImpl {
-    fn protocol_version(&self) -> Result<String> {
-        Ok("version1".into())
-    }
-
     fn add(&self, a: u64, b: u64) -> Result<u64> {
         Ok(a + b)
     }
 
-    fn call(&self, _: u64) -> BoxFuture<Result<String>> {
-        Box::pin(futures::future::ready(Ok("OK".to_owned())))
+    fn exit(&self) -> Result<String> {
+        Ok(String::from("exit"))
     }
 }
 
@@ -47,75 +40,19 @@ async fn start_websocket_server() {
     let listener = TcpListener::bind(IP_PORT).await.expect("Failed to bind");
     println!("WebSocket server running on {}", IP_PORT);
 
+    let io_handler = Arc::new(Mutex::new({
+        let mut io = IoHandler::new();
+        io.extend_with(RpcImpl.to_delegate());
+        io
+    }));
+
     while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(handle_connection(stream));
+        let io_handler = io_handler.clone();
+        tokio::spawn(handle_connection(stream, io_handler));
     }
 }
 
-fn handle_client_raw_message(msg: Cow<str>, mut stop: bool) -> (Vec<u8>, bool) {
-    /*let mut str_real_len = String::new();
-    let mut chars_iter = msg.chars().peekable();
-    let mut start_len = 0;
-    while let Some(c) = chars_iter.next() {
-        if c == 's' {
-            break;
-        }
-        start_len += 1;
-        str_real_len.push(c);
-    }
-    start_len += 1;
-    let real_len = str_real_len.parse::<usize>().unwrap() + start_len;
-    let mut answer: Vec<u8> = Vec::new();
-    if String::from_utf8_lossy(&buf[start_len..real_len]).eq("exit") {
-        for c in "exit".bytes() {
-            answer.push(c);
-        }
-        stop = true;
-    } else {
-        for i in String::from_utf8_lossy(&buf[start_len..real_len]).chars() {
-            let mut c = i as char;
-            match c {
-                '1' => { c = '0'; }
-                '0' => { c = '1'; }
-                _ => {
-                    if c.is_uppercase() {
-                        c = c.to_lowercase().next().unwrap();
-                    } else {
-                        c = c.to_uppercase().next().unwrap();
-                    }
-                }
-            }
-            answer.push(c as u8);
-        }
-    }
-    (answer, stop)*/
-    let mut answer: Vec<u8> = Vec::new();
-    if msg.eq("exit") {
-        for c in "exit".bytes() {
-            answer.push(c);
-        }
-        stop = true;
-    } else {
-        for i in msg.chars() {
-            let mut c = i;
-            match c {
-                '1' => { c = '0'; }
-                '0' => { c = '1'; }
-                _ => {
-                    if c.is_uppercase() {
-                        c = c.to_lowercase().next().unwrap();
-                    } else {
-                        c = c.to_uppercase().next().unwrap();
-                    }
-                }
-            }
-            answer.push(c as u8);
-        }
-    }
-    (answer, stop)
-}
-
-async fn handle_connection(stream: tokio::net::TcpStream) {
+async fn handle_connection(stream: tokio::net::TcpStream, io_handler: Arc<Mutex<IoHandler>>) {
     let ws_stream = match accept_async(stream).await {
         Ok(ws_stream) => ws_stream,
         Err(e) => {
@@ -156,11 +93,26 @@ async fn handle_connection(stream: tokio::net::TcpStream) {
             let msg = msg.unwrap();
             let len = noise.read_message(&msg.into_data(), &mut buf).unwrap();
             let msg = String::from_utf8_lossy(&buf[..len]);
-            println!("Client said: {}", msg);
-            let (answer, stop2) = handle_client_raw_message(msg, stop);
-            stop = stop2;
-            let len = noise.write_message(&answer, &mut buf).unwrap();
-            write.send(Message::binary(&buf[..len])).await.unwrap();
+
+            let response_message = {
+                let io_handler = io_handler.lock().await;
+                io_handler.handle_request(&msg).await
+            };
+
+            if let Some(response) = response_message {
+                println!("Response message: {}", response);
+                if let Some(value) = serde_json::from_str::<serde_json::Value>(&response)
+                    .unwrap()
+                    .get("result")
+                    .and_then(|v| v.as_str())
+                {
+                    if value == "exit" {
+                        stop = true;
+                    }
+                }
+                let len = noise.write_message(response.as_bytes(), &mut buf).unwrap();
+                write.send(Message::binary(&buf[..len])).await.unwrap();
+            }
         }
     }
     println!("Connection closed.");
@@ -214,6 +166,15 @@ async fn start_websocket_client() {
             break;
         }
         println!("Server said: {}", String::from_utf8_lossy(&buf[..len]));
+        if let Some(value) = serde_json::from_str::<serde_json::Value>(&String::from_utf8_lossy(&buf[..len]))
+            .unwrap()
+            .get("result")
+            .and_then(|v| v.as_str())
+        {
+            if value == "exit" {
+                break;
+            }
+        }
         let msg = payload_generator();
         let len = noise.write_message(&(msg.as_bytes()), &mut buf).unwrap();
         write.send(Message::binary(&buf[..len])).await.unwrap();
@@ -226,16 +187,12 @@ fn payload_generator() -> String {
     let mut payload = String::new();
     println!("Enter the payload: ");
     std::io::stdin().read_line(&mut payload).expect("Failed to read line");
-    //let payload = format!("{}s{}", payload.trim().len(), payload);
     payload.trim().to_string()
 }
 
 #[tokio::main]
 async fn main() {
-    //If start has been called with s as argument, the server mode will be started
-    //If start has been called with c as argument, the client mode will be started
-    #[allow(unused_assignments)]
-        let mut server_mode: bool = false;
+    let mut server_mode = false;
     if std::env::args().len() > 1 {
         server_mode = std::env::args().next_back().map_or(true, |arg| arg == "-s" || arg == "--server")
     } else {
