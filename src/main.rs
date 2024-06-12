@@ -1,13 +1,24 @@
+use std::net::SocketAddr;
 use futures_util::{SinkExt, StreamExt};
-use jsonrpc_core::{IoHandler, Result};
-use jsonrpc_derive::rpc;
+use jsonrpc_core::{IoHandler, Params, Result};
+use jsonrpsee::core::RpcResult;
+//use jsonrpc_derive::rpc;
+use jsonrpsee::proc_macros::rpc;
 use lazy_static::lazy_static;
 use snow::{Builder, params::NoiseParams};
-use tokio::net::TcpListener;
+//use tokio::net::TcpListener;
+use jsonrpsee::tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{accept_async, connect_async};
+//use tokio::sync::Mutex;
+use jsonrpsee::tokio::sync::Mutex;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use serde_json::Value::Number;
+use serde_json::Value;
+use jsonrpsee::rpc_params;
+use jsonrpsee::client_transport::ws::{Url, WsTransportClientBuilder};
+use jsonrpsee::core::client::{Client, ClientBuilder, ClientT};
+use jsonrpsee::server::{RpcModule, Server};
 
 const IP_PORT: &str = "127.0.0.1:9999";
 lazy_static! {
@@ -15,41 +26,78 @@ lazy_static! {
     static ref SECRET: [u8; 32] = *b"Random 32 characters long secret";
 }
 
-#[rpc]
+#[rpc(server)]
 pub trait Rpc {
-    #[rpc(name = "add")]
-    fn add(&self, a: u64, b: u64) -> Result<u64>;
+    #[method(name = "add")]
+    fn add(&self, a: u64, b: u64) -> RpcResult<u64>;
 
-    #[rpc(name = "exit")]
-    fn exit(&self) -> Result<String>;
+    #[method(name = "exit")]
+    fn exit(&self) -> RpcResult<String>;
 }
 
 struct RpcImpl;
 
-impl Rpc for RpcImpl {
-    fn add(&self, a: u64, b: u64) -> Result<u64> {
+impl RpcServer for RpcImpl {
+    fn add(&self, a: u64, b: u64) -> RpcResult<u64> {
         Ok(a + b)
     }
 
-    fn exit(&self) -> Result<String> {
+    fn exit(&self) -> RpcResult<String> {
         Ok(String::from("exit"))
     }
 }
 
-async fn start_websocket_server() {
-    let listener = TcpListener::bind(IP_PORT).await.expect("Failed to bind");
+async fn start_websocket_server() -> anyhow::Result<SocketAddr> {
+    /*let listener = TcpListener::bind(IP_PORT).await.expect("Failed to bind");
     println!("WebSocket server running on {}", IP_PORT);
 
     let io_handler = Arc::new(Mutex::new({
         let mut io = IoHandler::new();
-        io.extend_with(RpcImpl.to_delegate());
+        //io.extend_with(RpcImpl.to_delegate());
+        //io.add_method("exit", RpcImpl::exit);
+        //io.add_method("add", RpcImpl::add);
+        io.add_method("exit", |_params| async { Ok("exit".into()) });
+        /*io.add_method("add", |params: Params| async move {
+            println!("Request: {:?}", params.clone());
+            if let Params::Array(array) = params {
+                // Initialize the sum
+                let mut sum: f32 = 0.0;
+
+                // Iterate over each element in the array
+                for value in array {
+                    // If the element is a Number, add its value to the sum
+                    if let Value::Number(num) = value {
+                        if let Some(num) = num.as_f64() {
+                            sum += num as f32;
+                        }
+                    }
+                }
+                // Return the sum as a JSON Value
+                Ok(sum)
+            } else {
+                Ok(0.0)
+            }.expect("TODO: panic message");
+
+
+            Ok(1.1)
+        });*/
         io
     }));
+
+
 
     while let Ok((stream, _)) = listener.accept().await {
         let io_handler = io_handler.clone();
         tokio::spawn(handle_connection(stream, io_handler));
-    }
+    }*/
+    let server = Server::builder().build(IP_PORT).await.unwrap();
+    let mut module = RpcModule::new(());
+    module.register_method("say_hello", |_, _, _| "lo")?;
+    let addr = server.local_addr()?;
+    let handle = server.start(module);
+    tokio::spawn(handle.stopped());
+    println!("Address: {}", addr);
+    Ok(addr)
 }
 
 async fn handle_connection(stream: tokio::net::TcpStream, io_handler: Arc<Mutex<IoHandler>>) {
@@ -118,8 +166,8 @@ async fn handle_connection(stream: tokio::net::TcpStream, io_handler: Arc<Mutex<
     println!("Connection closed.");
 }
 
-async fn start_websocket_client() {
-    let url = format!("ws://{}", IP_PORT);
+async fn start_websocket_client() -> anyhow::Result<()> {
+    /*let url = format!("ws://{}", IP_PORT);
     let (mut write, mut read) = match connect_async(&url).await {
         Ok((ws_stream, _)) => ws_stream.split(),
         Err(e) => {
@@ -127,7 +175,6 @@ async fn start_websocket_client() {
             return;
         }
     };
-
     let builder = Builder::new(NOISE_PARAMS.clone());
     let static_key = builder.generate_keypair().unwrap().private;
     let mut noise = builder
@@ -179,7 +226,19 @@ async fn start_websocket_client() {
         let len = noise.write_message(&(msg.as_bytes()), &mut buf).unwrap();
         write.send(Message::binary(&buf[..len])).await.unwrap();
         println!("Message sent.");
-    }
+    }*/
+    /*tracing_subscriber::FmtSubscriber::builder()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init()
+        .expect("setting default subscriber failed");*/
+    let url = Url::parse(&format!("ws://{}", IP_PORT))?;
+    let (mut write, mut read) = WsTransportClientBuilder::default().build(url).await?;
+    let client = ClientBuilder::default().build_with_tokio(write, read);
+    let response: String = client.request("exit", rpc_params![]).await?;
+    tracing::info!("Response: {}", response);
+    println!("Response: {}", response);
+    return Ok(());
+
     println!("Connection closed.");
 }
 
@@ -192,7 +251,7 @@ fn payload_generator() -> String {
 
 #[tokio::main]
 async fn main() {
-    let mut server_mode = false;
+    let server_mode;
     if std::env::args().len() > 1 {
         server_mode = std::env::args().next_back().map_or(true, |arg| arg == "-s" || arg == "--server")
     } else {
@@ -208,4 +267,5 @@ async fn main() {
         println!("Client mode");
         start_websocket_client().await;
     }
+    futures::future::pending().await
 }
