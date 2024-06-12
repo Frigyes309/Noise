@@ -1,13 +1,20 @@
 use futures_util::{SinkExt, StreamExt};
-use jsonrpc_core::{IoHandler, Result};
-use jsonrpc_derive::rpc;
+use jsonrpc_core::{IoHandler, Params, Result};
+use jsonrpsee::core::RpcResult;
+use jsonrpsee::server::{Server};
+//use jsonrpc_derive::rpc;
+use jsonrpsee::proc_macros::rpc;
 use lazy_static::lazy_static;
 use snow::{Builder, params::NoiseParams};
-use tokio::net::TcpListener;
+//use tokio::net::TcpListener;
+use jsonrpsee::tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{accept_async, connect_async};
+//use tokio::sync::Mutex;
+use jsonrpsee::tokio::sync::Mutex;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use serde_json::Value::Number;
+use serde_json::Value;
 
 const IP_PORT: &str = "127.0.0.1:9999";
 lazy_static! {
@@ -15,23 +22,23 @@ lazy_static! {
     static ref SECRET: [u8; 32] = *b"Random 32 characters long secret";
 }
 
-#[rpc]
+#[rpc(server)]
 pub trait Rpc {
-    #[rpc(name = "add")]
-    fn add(&self, a: u64, b: u64) -> Result<u64>;
+    #[method(name = "add")]
+    fn add(&self, a: u64, b: u64) -> RpcResult<u64>;
 
-    #[rpc(name = "exit")]
-    fn exit(&self) -> Result<String>;
+    #[method(name = "exit")]
+    fn exit(&self) -> RpcResult<String>;
 }
 
 struct RpcImpl;
 
-impl Rpc for RpcImpl {
-    fn add(&self, a: u64, b: u64) -> Result<u64> {
+impl RpcServer for RpcImpl {
+    fn add(&self, a: u64, b: u64) -> RpcResult<u64> {
         Ok(a + b)
     }
 
-    fn exit(&self) -> Result<String> {
+    fn exit(&self) -> RpcResult<String> {
         Ok(String::from("exit"))
     }
 }
@@ -42,7 +49,34 @@ async fn start_websocket_server() {
 
     let io_handler = Arc::new(Mutex::new({
         let mut io = IoHandler::new();
-        io.extend_with(RpcImpl.to_delegate());
+        //io.extend_with(RpcImpl.to_delegate());
+        //io.add_method("exit", RpcImpl::exit);
+        //io.add_method("add", RpcImpl::add);
+        io.add_method("exit", |_params| async { Ok("exit".into()) });
+        /*io.add_method("add", |params: Params| async move {
+            println!("Request: {:?}", params.clone());
+            if let Params::Array(array) = params {
+                // Initialize the sum
+                let mut sum: f32 = 0.0;
+
+                // Iterate over each element in the array
+                for value in array {
+                    // If the element is a Number, add its value to the sum
+                    if let Value::Number(num) = value {
+                        if let Some(num) = num.as_f64() {
+                            sum += num as f32;
+                        }
+                    }
+                }
+                // Return the sum as a JSON Value
+                Ok(sum)
+            } else {
+                Ok(0.0)
+            }.expect("TODO: panic message");
+
+
+            Ok(1.1)
+        });*/
         io
     }));
 
@@ -192,7 +226,7 @@ fn payload_generator() -> String {
 
 #[tokio::main]
 async fn main() {
-    let mut server_mode = false;
+    let server_mode;
     if std::env::args().len() > 1 {
         server_mode = std::env::args().next_back().map_or(true, |arg| arg == "-s" || arg == "--server")
     } else {
