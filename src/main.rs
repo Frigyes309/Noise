@@ -13,8 +13,12 @@ use jsonrpsee::{
 use lazy_static::lazy_static;
 use snow::{params::NoiseParams, Builder};
 use std::sync::Arc;
-use tokio::net::TcpListener;
+use jsonrpsee::server::Server;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
+use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
+use jsonrpsee::core::server::rpc_module::Method;
 
 pub type Error =  Box<dyn std::error::Error>;
 
@@ -59,12 +63,12 @@ impl RpcServer for RpcImpl {
     }
 }
 
-/*async fn handle_connection(stream: TcpStream) {
+async fn handle_request(stream: TcpStream) -> Into<RpcImpl> {
     let ws_stream = match accept_async(stream).await {
         Ok(ws_stream) => ws_stream,
         Err(e) => {
             eprintln!("Failed to accept WebSocket connection: {:?}", e);
-            return;
+            return Err(e.into());
         }
     };
     let (mut write, mut read) = ws_stream.split();
@@ -95,7 +99,9 @@ impl RpcServer for RpcImpl {
     let mut noise = noise.into_transport_mode().unwrap();
     let mut stop = false;
 
-    while !stop {
+    //return RpcImpl.into_rpc();
+
+    /*while !stop {
         if let Some(msg) = read.next().await {
             let msg = msg.unwrap();
             let len = noise.read_message(&msg.into_data(), &mut buf).unwrap();
@@ -121,9 +127,10 @@ impl RpcServer for RpcImpl {
                 write.send(Message::binary(&buf[..len])).await.unwrap();
             }
         }
-    }
+    }*/
     println!("Connection closed.");
-}*/
+    Ok(())
+}
 
 /*async fn start_websocket_client() {
     let url = format!("ws://{}", IP_PORT);
@@ -200,7 +207,7 @@ fn payload_generator() -> String {
     payload.trim().to_string()
 }
 
-/*async fn handle_connection(mut stream: TcpStream, noise: HandshakeState, io_handler: Arc<RpcModule<()>>) -> Result<(), Box<dyn std::error::Error>> {
+/*async fn handle_request(mut stream: TcpStream, noise: HandshakeState, io_handler: Arc<RpcModule<()>>) -> Result<(), Box<dyn std::error::Error>> {
     let mut noise = noise;
 
     // Handshake folyamat
@@ -234,8 +241,8 @@ fn payload_generator() -> String {
         transport.write_message(response.as_bytes(), &mut encrypted_response)?;
         stream.write_all(&encrypted_response).await?;
     }
-}
-*/
+}*/
+
 async fn run_server() -> Result<(), Error> {
     /*let listener = TcpListener::bind(IP_PORT).await.expect("Failed to bind");
     println!("WebSocket server running on {}", IP_PORT);
@@ -257,7 +264,12 @@ async fn run_server() -> Result<(), Error> {
         .build(IP_PORT)
         .await?;
 
-    let handle = server.start(RpcImpl.into_rpc());
+    let tcp_listener = TcpListener::bind(IP_PORT).await?;
+
+    let (stream, _) = tcp_listener.accept().await?;
+    //let handle = server.start(RpcImpl.into_rpc());
+
+    let handle = server.start(handle_request(stream));
 
     /*while let Ok((stream, _)) = handle.accept().await {
         let io_handler = handle.clone();
